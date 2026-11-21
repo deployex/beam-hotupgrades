@@ -11,6 +11,9 @@ If you use [DeployEx](https://github.com/deployex/deployex) or another deploymen
 [Jellyfish](https://github.com/deployex/jellyfish) generates `.appup` files automatically for Elixir applications from a diff between two builds.
 You can also write or extend appups by hand when an upgrade needs actions that cannot be inferred from the diff, see [Adding or removing a process in the supervision tree](#adding-or-removing-a-process-in-the-supervision-tree).
 
+[relup-guard-elixir](https://github.com/deployex/relup-guard-elixir) and [relup-guard-erlang](https://github.com/deployex/relup-guard-erlang) are CI actions that boot a real release and apply a real upgrade against it on every pull request, for Mix and rebar3/relx releases respectively.
+They automate the "exercise the upgrade before production" practice from [Good practices for a project that can be hot-upgraded](#good-practices-for-a-project-that-can-be-hot-upgraded), they do not replace it, a failure they catch is still worth reproducing by hand on a real node.
+
 Most releases do not need a full deployment.
 You do not change OTP or your libraries often, and a hot upgrade combines with migrations to ship a change with no downtime at all.
 High availability is not free though, it is something you design for, and this guide covers the part of that design that shows up at deployment time.
@@ -81,6 +84,10 @@ That distinction is what the failure messages from any tool built on this mechan
 For each changed module the plan loads the new code, and for a stateful process it suspends the process, calls `code_change/3`, then resumes it.
 The process is never restarted and never loses its mailbox, it is paused for as long as the migration of its own state takes.
 Everything that follows in [Good practices](#good-practices-for-a-project-that-can-be-hot-upgraded) is about making sure the code holding that state can survive being replaced underneath it.
+
+That suspend step only reaches a process `release_handler` can find by walking the supervision tree down from the application's top supervisor.
+A process started any other way, a bare `spawn`, or one linked directly from an application's `start/2` outside any supervisor, is invisible to every appup instruction.
+The upgrade still reports success, there is simply nothing in the plan that was ever going to touch that process, and nothing surfaces to say so.
 
 ### Which version performs the upgrade
 
@@ -206,6 +213,10 @@ An appup can suspend a process, load the new module and resume it, but only your
 If a `GenServer` state changes shape between versions, write the migration.
 If it does not, there is nothing to do.
 
+A `gen_statem` callback module takes a different shape, `code_change/4`, with state and data as separate arguments and `{ok, NewState, NewData}` as the return.
+Implement the callback your behaviour actually calls.
+An appup instruction that specifies `{advanced, Extra}` against a module missing the matching callback does not skip the migration, it crashes the process with `undef`.
+
 **Treat a supervision tree change as a step of its own.**
 An upgrade changes code, it does not change the shape of the running system, so a server you added is not started and one you removed is not stopped.
 This is the one case where a generated appup is not enough on its own, see [Adding or removing a process in the supervision tree](#adding-or-removing-a-process-in-the-supervision-tree).
@@ -231,6 +242,12 @@ Upgrades are computed from one version to another, so two builds sharing a versi
 Build the current version, build the target, then apply one to the other against a real node.
 Building the two versions the same way belongs in CI, so the artifact used for the real exercise is never built by hand.
 Applying the upgrade itself is best run by hand against a real node first, until you trust the process enough to automate it.
+
+Booting that release, in CI or by hand, is its own source of failures that have nothing to do with the upgrade mechanism.
+`vm.args` is commonly templated with placeholders such as `${RELEASE_NODE}` or one of your own, filled in at boot time only when `relx`'s `RELX_REPLACE_OS_VARS` (or the equivalent Mix release mechanism) is enabled and the referenced environment variables are actually set.
+Boot the release anywhere that does not set them and the literal placeholder text is passed straight to the VM, so it never comes up.
+That failure looks exactly like any other boot failure, a timeout with no further detail, which makes it easy to blame the upgrade itself rather than how the node was started for the test.
+Check what `vm.args` expects substituted before booting a release outside its normal deployment environment, and supply those variables explicitly rather than letting the first sign of the problem be a timed-out CI job.
 
 ## Phoenix and LiveView pitfalls
 
@@ -375,6 +392,8 @@ The more of your release that is state living inside processes, the more that as
 ## Additional Resources
 
 - [Jellyfish][jyf] - AppUp file generation for Elixir releases
+- [relup-guard-elixir](https://github.com/deployex/relup-guard-elixir) - CI action that applies a real upgrade against a booted Mix release on every pull request
+- [relup-guard-erlang](https://github.com/deployex/relup-guard-erlang) - the same check for rebar3/relx releases
 - [DeployEx](https://github.com/deployex/deployex) - a deployment tool that applies this mechanism to monitored applications and to itself
 - [Erlang OTP Design Principles: Release Handling](https://www.erlang.org/doc/system/release_handling.html) - what `release_handler` does and in what order
 - [Erlang Appup Cookbook](https://www.erlang.org/doc/system/appup_cookbook.html) - worked appups, including supervisors and special processes

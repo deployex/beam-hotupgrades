@@ -208,6 +208,13 @@ The same applies to anything that runs for a long time inside one call, a `Task`
 It keeps running the code it started with, and there is no supported way to change that from the outside.
 Write those as behaviours, or make the loop re-enter through the module so an upgrade has a point at which to take effect.
 
+**Know that purging kills by default.**
+The `update` and `load_module` instructions each take a `PrePurge` and a `PostPurge` value, and a generated appup that leaves them out, which is the normal case, gets `brutal_purge` for both.
+Under `brutal_purge`, a process still executing the old code when the purge runs is killed outright, which is exactly what happens to a process that never re-entered through its module as described above, or to a plain process that happened to be mid-call when a third version loaded.
+`soft_purge` is the alternative: instead of killing, `release_handler:install_release/1` returns `{error, {old_processes, Module}}` and the purge waits until nothing is running the old code anymore.
+A NIF library follows the same timing from the native side, its `unload` callback only runs once the module instance it belongs to is purged, so a NIF-backed module left under `brutal_purge` can have its process killed while a call into the library is still in progress.
+Hand-edit the generated appup to set `soft_purge` on a specific module when this matters, the same way as [adding or removing a supervision-tree child](#adding-or-removing-a-process-in-the-supervision-tree).
+
 **Give stateful processes a `code_change/3`.**
 An appup can suspend a process, load the new module and resume it, but only your code knows how to reshape the state it was holding.
 If a `GenServer` state changes shape between versions, write the migration.
@@ -397,6 +404,7 @@ The more of your release that is state living inside processes, the more that as
 - [DeployEx](https://github.com/deployex/deployex) - a deployment tool that applies this mechanism to monitored applications and to itself
 - [Erlang OTP Design Principles: Release Handling](https://www.erlang.org/doc/system/release_handling.html) - what `release_handler` does and in what order
 - [Erlang Appup Cookbook](https://www.erlang.org/doc/system/appup_cookbook.html) - worked appups, including supervisors and special processes
+- [Erlang Appup File Format Reference](https://www.erlang.org/doc/apps/sasl/appup.html) - the instruction set itself, including the `PrePurge`/`PostPurge` defaults
 - [Erlang Compilation and Code Loading](https://www.erlang.org/doc/system/code_loading.html) - current and old code, purging, fully qualified calls
 
 [jyf]: https://github.com/deployex/jellyfish

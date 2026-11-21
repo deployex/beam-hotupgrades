@@ -402,6 +402,7 @@ The more of your release that is state living inside processes, the more that as
 - [relup-guard-elixir](https://github.com/deployex/relup-guard-elixir) - CI action that applies a real upgrade against a booted Mix release on every pull request
 - [relup-guard-erlang](https://github.com/deployex/relup-guard-erlang) - the same check for rebar3/relx releases
 - [DeployEx](https://github.com/deployex/deployex) - a deployment tool that applies this mechanism to monitored applications and to itself
+- [FlyDeploy](https://github.com/chrismccord/fly_deploy) - hot-upgrades a Mix release running on Fly.io machines, built on `:sys.suspend`/`:code.modified_modules`/`:sys.change_code`/`:sys.resume` instead of a generated appup, and falls back to a cold `fly deploy` for supervision-tree changes, config changes, NIF/port changes and Erlang/OTP version changes - the same boundaries this guide calls out for the appup-based mechanism
 - [Erlang OTP Design Principles: Release Handling](https://www.erlang.org/doc/system/release_handling.html) - what `release_handler` does and in what order
 - [Erlang Appup Cookbook](https://www.erlang.org/doc/system/appup_cookbook.html) - worked appups, including supervisors and special processes
 - [Erlang Appup File Format Reference](https://www.erlang.org/doc/apps/sasl/appup.html) - the instruction set itself, including the `PrePurge`/`PostPurge` defaults

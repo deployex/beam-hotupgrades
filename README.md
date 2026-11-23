@@ -137,6 +137,10 @@ The diff of `mix.lock` is the complete list of what moves, so assess each entry 
 git diff v1.0.0 v1.1.0 -- mix.lock
 ```
 
+In an umbrella project, declare a library in the `mix.exs` of the child app that uses it, not only in the root one.
+The root `mix.exs` is the place for build tooling, [Jellyfish][jyf] itself included.
+A dependency declared only there belongs to no child app, so the release does not ship it unless its `applications` list names it, and Jellyfish generates no appup for it.
+
 Reading a dependency diff is worth handing to an LLM.
 Ask it to summarise what changed between the two versions and, specifically, whether anything there affects state held by a running process or the shape of a supervision tree.
 Treat the answer as a place to start looking, not as the verdict, and confirm what it reports against the changelog and the diff itself.

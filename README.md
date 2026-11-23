@@ -127,6 +127,20 @@ An appup only describes how to load the new code though, it says nothing about w
 
 Do that per dependency, not per release, and keep the number moving in a single hot upgrade small enough that the review stays realistic.
 
+**Read the lockfile, not only `mix.exs`, to see which dependencies move.**
+A dependency update can move libraries you never declared: updating `finch` can move `nimble_pool` and `mint` with it.
+Those are hot-upgraded like any other, and since version 0.2.10 Jellyfish generates their appups too, for every dependency that a declared production dependency brings in and the release ships.
+Earlier versions generate appups only for the dependencies declared in `mix.exs`, so a transitive one that moves has to be declared there, or the release goes out as a full deployment.
+The diff of `mix.lock` is the complete list of what moves, so assess each entry in it, declared or not:
+
+```bash
+git diff v1.0.0 v1.1.0 -- mix.lock
+```
+
+In an umbrella project, declare a library in the `mix.exs` of the child app that uses it, not only in the root one.
+The root `mix.exs` is the place for build tooling, [Jellyfish][jyf] itself included.
+A dependency declared only there belongs to no child app, so the release does not ship it unless its `applications` list names it, and Jellyfish generates no appup for it.
+
 Reading a dependency diff is worth handing to an LLM.
 Ask it to summarise what changed between the two versions and, specifically, whether anything there affects state held by a running process or the shape of a supervision tree.
 Treat the answer as a place to start looking, not as the verdict, and confirm what it reports against the changelog and the diff itself.
@@ -350,6 +364,26 @@ Nothing listed means the release was built without hot-upgrade information and c
 Extract a `jellyfish.json` and read its `from` and `to`.
 For a project entry the `from` has to be the version currently running, so a release built against an older version is not applicable no matter how well formed it is.
 A dependency entry carries the library's own versions instead, since dependencies are versioned independently from the project.
+
+**Check that every application that changed version has an appup.**
+`systools:make_relup/4` needs one for each of them, the dependencies that another dependency brings in included.
+The release build reports each application it checked, and the ones with an appup show where it was written:
+
+```
+[myphoenixapp]            versions: ["1.0.0", "1.1.0"]             current: 1.1.0       - appups: myphoenixapp/rel/appups/myphoenixapp
+[finch]                   versions: ["0.20.0", "0.21.0"]           current: 0.21.0      - appups: myphoenixapp/rel/appups/finch
+[nimble_pool]             versions: ["1.1.0", "1.2.0"]             current: 1.2.0       - appups: myphoenixapp/rel/appups/nimble_pool
+[mint]                    versions: ["1.7.1"]                      current: 1.7.1       - No appups
+```
+
+An application that lists two versions and still reports `No appups`, or one that moved and is not listed at all, has no upgrade path.
+The relup then fails to build, naming the file it could not find:
+
+```
+Could not open file lib/nimble_pool-1.2.0/ebin/nimble_pool.appup
+```
+
+Nothing on the node is touched at that point, but the release cannot be hot-upgraded as it was built.
 
 **Ask the node what it has installed.**
 `:release_handler.which_releases()` lists the releases the node knows about and their status, which tells you what a previous attempt left behind:

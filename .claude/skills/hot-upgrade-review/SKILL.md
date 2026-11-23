@@ -20,6 +20,12 @@ Go through the diff and flag anything in these categories. Report concrete file/
 - A `Supervisor`'s `init/1` gained or lost a child spec. Jellyfish cannot see this, see "Adding or removing a process in the supervision tree" in the README. Confirm the appup has `apply` instructions for the added/removed child, in the right order, or that this release is going out as a full deployment instead.
 - A `GenServer`'s state shape changed (new/removed/renamed fields, different variant). Confirm `code_change/3` was added or updated to migrate it. No `code_change/3` plus a changed state shape is a crash waiting for the next message.
 
+## Dependencies that moved
+
+- Take the list of dependencies that moved from the `mix.lock` diff, not from `mix.exs`. A dependency that is not declared in `mix.exs` and moved because another one brought it in is hot-upgraded too, and needs the same review as a declared one, see "Assess every dependency you upgrade, one at a time" in the README.
+- For each one, read what changed between the two versions and flag changes to the state of a running process or to a supervision tree.
+- If the project uses a Jellyfish version before 0.2.10, flag every moved dependency that `mix.exs` does not declare: it gets no appup, and the relup fails to build.
+
 ## Anonymous function / closure lifetime
 
 For each new or changed closure (`fn ... end`, `&(...)`, `&private_fun/1`), ask: can it still be called after the current call returns? If yes, it needs to be stored as `{module, function, args}` instead, not as the function value itself. Look specifically at:

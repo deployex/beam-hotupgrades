@@ -46,6 +46,10 @@ A closure does not have to be in the diff to break. When the diff changes a modu
 
 A hand-written `receive` loop (not a `GenServer`/`GenStatem`/etc.) that calls `loop(state)` instead of `__MODULE__.loop(state)` never picks up new code and gets purged (killing the process) at the next load of a third version. Flag any hand-rolled loop and confirm it re-enters through the module.
 
+## Protocol implementations
+
+- The diff adds a `defimpl`, a `@derive`, or a dependency that brings one. The consolidated protocols are outside of every application, no appup covers them, and the node keeps the protocols it booted with: the first value of the new struct raises `Protocol.UndefinedError`. See "Load the consolidated protocols when a release adds an implementation" in the README. Confirm that the deployment tool loads the consolidated protocols of the new release as a step of the upgrade, or that this release goes out as a full deployment.
+
 ## Phoenix / LiveView specific
 
 - Any change under `assets/` or `priv/static/`: the static manifest is read when the endpoint starts and a hot upgrade does not read it again. Confirm that `config_change/3` calls `Endpoint.config_change/2`, which reloads it, and that the release asks the deployment tool to trigger that callback (`hot_upgrade_config_change` in DeployEx). Without both, this release is a full deployment.

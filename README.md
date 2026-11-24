@@ -65,8 +65,10 @@ On one Phoenix application of about 600 modules, with background jobs and messag
  * More than a hundred function values were held by open pages. The first event on a page after an upgrade of its module crashed it, and the page reconnected.
  * A job that was running when its module was replaced was killed, and tried again a few seconds later on the new code.
  * A message that was being handled when its consumer's module was replaced left the consumer connected and receiving nothing, without a line in the log, until it was restarted.
+ * A release that added a struct with a protocol implementation installed without an error, and raised `Protocol.UndefinedError` the first time the struct was used.
+ * A release that moved an HTTP client library to a version with a new process and a new shape of state failed halfway and restarted the node. With the instructions of that library edited to stop it, load it and start it again, the same release went through.
 
-None of them stopped an upgrade from succeeding. All of them were in the way of it being invisible.
+All but the last let the upgrade report success. All of them were in the way of it being invisible.
 
 ### For a library
 
@@ -332,6 +334,23 @@ This is the one case where a generated appup is not enough on its own, see [Addi
 Application environment is written to `sys.config` and read back with `file:consult/1`, so every value has to be a term that can be written down and parsed again.
 An anonymous function cannot, and a configuration file that fails to parse is silently replaced with an empty one, which resets the environment of every application in the release.
 Use `&Module.fun/1` captures of exported functions, or plain data your code interprets.
+
+**Load the consolidated protocols when a release adds an implementation.**
+An Elixir release consolidates its protocols: each one is compiled again with the list of its implementations, and kept in `releases/<version>/consolidated`, outside of every application.
+An appup describes one application, so no appup covers those modules, and `release_handler` loads the implementation a release adds and leaves the protocol as it was when the node booted, not knowing it.
+
+```elixir
+# a struct added by the release, on a node that was hot-upgraded to it
+Jason.encode!(%MyApp.Invoice{})
+** (Protocol.UndefinedError) protocol Jason.Encoder not implemented for MyApp.Invoice (a struct)
+```
+
+The upgrade itself reports success, the error only comes when a value of the new struct reaches the protocol, and a restart makes it go away, so a full deployment never shows it.
+Any `defimpl`, and any `@derive`, in a release is enough: a struct that is encoded to JSON, printed, put in a URL or rendered in a template.
+
+The consolidated protocols of the new release have to be loaded as a step of the upgrade: every module in its `consolidated` directory whose code is not the one that is loaded, with the code path moved to that directory.
+[DeployEx](https://github.com/deployex/deployex) does it for every hot upgrade.
+With a tool that does not, a release that adds a protocol implementation is a full deployment.
 
 **Keep the two versions compatible at their boundaries.**
 For a while the old and the new version coexist: messages sent before the upgrade are handled after it, replicas are upgraded one at a time so they talk to each other across versions, and rows and ETS entries written by the old code are read by the new one.

@@ -86,7 +86,7 @@ Without one, the application's upgrade succeeds and your process crashes on its 
 **3. Say what an upgrade between two versions does.**
 In the changelog of each release: whether a running process changes state, whether the supervision tree changes, whether anything has to be restarted.
 That is what the application's team reads before they upgrade you in a running node.
-[Ranch](https://ninenines.eu/docs/en/ranch/2.4/guide) goes further: it ships its own `.appup` files, and the migration guide of each version says what changed for a release upgrade.
+[Ranch](https://github.com/ninenines/ranch) goes further: it ships its own hand-written `.appup`, which stops its acceptors and migrates the state of its server, so an application that upgrades it from the previous minor version has nothing to write.
 
 **4. Be easy to stop and start.**
 Work that cannot be migrated can be paused around the upgrade, if the library offers a way that lets it finish.

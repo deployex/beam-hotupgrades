@@ -5,6 +5,8 @@ description: Review an Elixir/Erlang diff or PR for changes that would break a B
 
 # Hot upgrade review
 
+This reviews one change. To audit a whole project before it adopts hot upgrades, use `hot-upgrade-readiness`.
+
 Check the diff against the rules in this repository's [README](../../../README.md), not from memory, read the relevant section if a check below is unclear.
 
 Go through the diff and flag anything in these categories. Report concrete file/line findings, not a restatement of the rules.
@@ -33,9 +35,12 @@ For each new or changed closure (`fn ... end`, `&(...)`, `&private_fun/1`), ask:
 - Values stored in `GenServer` state, `:persistent_term`, or ETS.
 - Callbacks handed to something long-running (a stream, a `Task` that loops, a download).
 - `assign/3` calls in LiveView and function props passed to components or slots.
+- `attach_hook/4` in LiveView with `&local_fun/arity` or an anonymous function. The hook is stored in the socket of every open page.
 - Any value written to application config (`config :app, key: fn -> ... end`), which also breaks `sys.config` parsing, not just hot upgrades.
 
 `&Module.fun/arity` captures of exported functions are fine, they resolve through the module. Private-function captures and literal closures are not.
+
+A closure does not have to be in the diff to break. When the diff changes a module, look at the function values that module already hands out: one stored by an open LiveView or a running process was created by the version being replaced, and fails on its first call after the upgrade.
 
 ## Long-running processes that bypass OTP behaviours
 
@@ -43,7 +48,8 @@ A hand-written `receive` loop (not a `GenServer`/`GenStatem`/etc.) that calls `l
 
 ## Phoenix / LiveView specific
 
-- Any change under `assets/` or `priv/static/` in a release meant to hot-upgrade: the static manifest is cached at endpoint boot and will not pick up new digests. This needs a full deployment, not a hot upgrade, unless the team has a separate mechanism to refresh it.
+- Any change under `assets/` or `priv/static/`: the static manifest is read when the endpoint starts and a hot upgrade does not read it again. Confirm that `config_change/3` calls `Endpoint.config_change/2`, which reloads it, and that the release asks the deployment tool to trigger that callback (`hot_upgrade_config_change` in DeployEx). Without both, this release is a full deployment.
+- The previous version's digested files have to ship in the new release, for the pages that are already open. `phx.digest` keeps them when both versions are built in the same directory.
 - A LiveView's assigns shape changed in a way existing connections rely on, and there is no tolerant read path for the old shape. There is no `code_change/3` for per-connection LiveView state, see the README's LiveView section, so this is either expand-then-contract across two releases or an accepted remount.
 
 ## Cross-version compatibility at the boundary

@@ -292,6 +292,7 @@ If a release changes the shape of data your LiveView stores in assigns in a way 
 
 **Closures in assigns are the same lifetime problem as anywhere else.**
 A function value handed to a component as a prop, stored in `socket.assigns`, or captured in a slot, is tied to the module version that created it exactly like a closure in any other process state.
+The same goes for a hook: `attach_hook(socket, :name, :handle_params, &my_hook/3)` stores the capture in the socket of every open page, and the first event that reaches it after an upgrade of that module fails with `BadFunctionError`. Write `&__MODULE__.my_hook/3`, with the function exported.
 `assign(socket, on_select: fn item -> ... end)` held across a hot upgrade is the LiveView-flavoured instance of the anonymous-function rule above, not a special case, the fix is the same: pass `{module, function, args}` or a reference the current code resolves through a module call.
 
 ## Adding or removing a process in the supervision tree
@@ -352,6 +353,13 @@ Read the result yourself before shipping it, the same way you would read the dif
 Then apply the upgrade against a real node and confirm the tree, `Supervisor.which_children/1` tells you what actually runs after it.
 
 The alternative is always available and sometimes the better trade: ship the tree change as a full deployment, and keep the hot upgrades for changes that only touch code.
+
+## Skills for coding agents
+
+Two skills in [`.claude/skills`](.claude/skills) apply this guide to a codebase. Copy the directory into a project, or into `~/.claude/skills`, to use them.
+
+ * [`hot-upgrade-readiness`](.claude/skills/hot-upgrade-readiness/SKILL.md) audits a whole project before it adopts hot upgrades: the build, the function values and processes that are already there, what is read once at boot, and what can never be hot-upgraded. Run it once, at the start.
+ * [`hot-upgrade-review`](.claude/skills/hot-upgrade-review/SKILL.md) reviews one diff or pull request that is meant to ship as a hot upgrade. Run it on every such change.
 
 ## Checking whether a hot upgrade is possible
 

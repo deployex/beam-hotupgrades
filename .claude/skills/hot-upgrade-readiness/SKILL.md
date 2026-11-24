@@ -87,6 +87,7 @@ Name these so the team knows which releases stay full deployments. See "When NOT
 
 - **Native code**: dependencies with a NIF or a port driver. The reliable check is the built release: `find <release>/lib -name '*.so' -o -name '*.dll'`, leaving out the ones of Erlang itself. Without a build, look for `rustler` and `elixir_make` in `mix.lock` and for `load_nif` in `deps`, and expect matches that are not NIFs. A NIF that is optional may be built on one platform and not on another, check the platform that is deployed.
 - **Config Providers**: a change to their code is not applied by a hot upgrade.
+- **Protocol implementations, with a tool that does not load them.** Elixir keeps the consolidated protocols outside of every application, so no appup covers them, see "Load the consolidated protocols when a release adds an implementation". Find out whether the deployment tool loads them as a step of the upgrade. If it does not, every release that adds a `defimpl` or a `@derive` is a full deployment, and count how often the project adds one: `rg -c 'defimpl |@derive' lib`. With `consolidate_protocols: false` in the release there is nothing to load, and dispatch is slower.
 - **Erlang, Elixir and the release's own boot files.**
 - **Database migrations**: note how they run. They have to be compatible with the code that is running while they run. See "Keep the two versions compatible at their boundaries".
 

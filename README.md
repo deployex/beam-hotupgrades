@@ -20,6 +20,92 @@ High availability is not free though, it is something you design for, and this g
 
 A release is easiest to judge backwards: look first for what cannot be hot-upgraded, then decide about everything else.
 
+## The path to hot upgrades
+
+The rest of this guide is a reference: what the mechanism does, and what breaks under it.
+This section is the order to do things in, for a project that is not hot-upgraded today and wants to be.
+Each step says when it is done, and points at the part of the guide that covers it.
+
+### For an application
+
+**1. Decide which releases it is for.**
+A hot upgrade keeps what a restart drops: open connections, pages people are using, work in flight.
+It does not replace the runtime, native code or the release's own boot files, so some releases stay full deployments, see [When NOT to hot-upgrade](#when-not-to-hot-upgrade).
+*Done when* you can say which of your last ten releases would have qualified.
+
+**2. Make the build produce an upgrade.**
+A version of its own for every build, appups generated from the previous build, a tarball, and one toolchain for both versions, see [Give every build its own version](#good-practices-for-a-project-that-can-be-hot-upgraded) and the build part of the readiness skill.
+*Done when* two builds in a row give an appup that lists the modules you changed, and no others.
+
+**3. Audit what is already there.**
+Run the [`hot-upgrade-readiness`](.claude/skills/hot-upgrade-readiness/SKILL.md) skill on the project, or go through its five parts by hand.
+Most of what it finds was written long before anyone thought of hot upgrades: function values kept in the state of open pages and processes, values read once at boot, work that can be killed half done.
+*Done when* every finding is fixed, or accepted with its consequence written down.
+
+**4. Upgrade a real node, on your machine.**
+Run the release, not the development server, under your deployment tool, against local services.
+Then upgrade it while it is doing something: a page open, a job running, a message being handled. Change the module each of them runs, and use the page afterwards.
+Read the relup that was applied: it should load what you changed.
+*Done when* each of them survives, or recovers the way you decided it should. See [Exercise the upgrade before production](#good-practices-for-a-project-that-can-be-hot-upgraded).
+
+**5. Put it in the pipeline.**
+Build the version that is deployed, then the new one, in the same directory, and publish the result.
+Let the deployment tool fall back to a full deployment when a release cannot be hot-upgraded, see [Checking whether a hot upgrade is possible](#checking-whether-a-hot-upgrade-is-possible).
+[relup-guard-elixir](https://github.com/deployex/relup-guard-elixir) and [relup-guard-erlang](https://github.com/deployex/relup-guard-erlang) apply a real upgrade on every pull request.
+*Done when* a release reaches a staging node as a hot upgrade without anyone doing it by hand.
+
+**6. Keep it that way.**
+Review every change that will ship as a hot upgrade with the [`hot-upgrade-review`](.claude/skills/hot-upgrade-review/SKILL.md) skill, and read the relup of each upgrade after it is applied.
+A rule that is not checked is broken by the next feature.
+
+Steps 3 and 4 are not optional reading.
+On one Phoenix application of about 600 modules, with background jobs and message consumers, they found what no one had seen in years of full deployments:
+
+ * Every upgrade loaded all 600 modules, whatever had changed, because of how the two builds were compared. An upgrade that touched one module then loaded one.
+ * More than a hundred function values were held by open pages. The first event on a page after an upgrade of its module crashed it, and the page reconnected.
+ * A job that was running when its module was replaced was killed, and tried again a few seconds later on the new code.
+ * A message that was being handled when its consumer's module was replaced left the consumer connected and receiving nothing, without a line in the log, until it was restarted.
+
+None of them stopped an upgrade from succeeding. All of them were in the way of it being invisible.
+
+### For a library
+
+An application can only be hot-upgraded as far as its dependencies can, see [Assess every dependency you upgrade, one at a time](#good-practices-for-a-project-that-can-be-hot-upgraded).
+A library author does not run that upgrade, and decides how hard it is.
+This is a starting list, from what applications run into.
+
+**1. Keep function values out of what you hold.**
+State, ETS tables and `persistent_term` should keep `{module, function, args}` or data, and not a function the user passed.
+When your API takes a callback that outlives the call, say that it has to be a `&Module.fun/arity` capture, and check it.
+[Telemetry](https://hexdocs.pm/telemetry) does: attaching a handler that is an anonymous function or a local capture logs a warning.
+
+**2. Migrate the state you own.**
+When a release changes the state of one of your processes, give the module a `code_change/3` that takes the previous shape, and keep it for as many versions as you support upgrading across.
+Without one, the application's upgrade succeeds and your process crashes on its next message.
+
+**3. Say what an upgrade between two versions does.**
+In the changelog of each release: whether a running process changes state, whether the supervision tree changes, whether anything has to be restarted.
+That is what the application's team reads before they upgrade you in a running node.
+[Ranch](https://ninenines.eu/docs/en/ranch/2.4/guide) goes further: it ships its own `.appup` files, and the migration guide of each version says what changed for a release upgrade.
+
+**4. Be easy to stop and start.**
+Work that cannot be migrated can be paused around the upgrade, if the library offers a way that lets it finish.
+[Broadway](https://hexdocs.pm/broadway) lets the messages being handled finish when a pipeline is stopped through its supervisor.
+[Oban](https://hexdocs.pm/oban) can pause the queues of one node, waits for running jobs for a grace period when it shuts down, and tries a job that was killed again.
+A deployment tool can only use what is there.
+
+**5. Leave a way to refresh what you read at boot.**
+A value read once from the configuration or the environment stays as it was after a hot upgrade.
+Expose a function that reads it again, as `Phoenix.Endpoint.config_change/2` does for the endpoint and its static manifest, so the application can call it from `config_change/3`.
+
+**6. Say so when you cannot.**
+A NIF, a port driver, or a release that changes how nodes talk to each other cannot be replaced in a running node, see [Do not hot-upgrade native code](#good-practices-for-a-project-that-can-be-hot-upgraded).
+A line in the README saves the application's team from finding out in production.
+
+**7. Upgrade between two of your own versions in CI.**
+Build a small release on the previous version, upgrade it to the new one, and check that it still does its work.
+It is the only test that tells you step 2 was done.
+
 ## What can be hot-upgraded
 
 * **Your applications** - the Elixir/Erlang/Gleam code you deploy.

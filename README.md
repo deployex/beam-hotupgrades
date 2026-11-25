@@ -107,6 +107,9 @@ More tests on the same application, each a release that changed one thing while 
 | A module that four tasks were running, one of them inside a database transaction | All four were killed a moment after the upgrade, and the transaction was rolled back. A task started by module and function, with a short loop, went on with the new code |
 | A queue added to the configuration of the job library | The configuration of the node had the queue, the job library that was running did not, until a restart |
 | An application removed from the release | It was stopped and unloaded, its modules removed, and the protocol it implemented loaded again without it |
+| The version of LiveView, with a page open | The ten modules of the library that differed were loaded, and 136 modules of the application with them: its LiveViews and components are compiled against the library. The open page crashed on its next event, on a function value it had kept, and reconnected |
+| A value read at compile time, given another value in `runtime.exs` | With a migration step that boots the release before the upgrade: the step failed, the upgrade was refused and the node kept running. Without one: the upgrade installed, and the node could not boot again |
+| A file the application loads into memory when it boots, and a VM flag | The new file was on disk and the new flag in `vm.args`. The node went on with the old data and the old flag until a restart |
 
 Two things are not in those tables.
 The database of the test had the schema and no data, and nobody was using the application during the upgrade: what it shows is that the mechanism works on a real release, not how it behaves under traffic.
@@ -278,6 +281,11 @@ What that means in practice, regardless of which tool drives the upgrade:
 * **A changed Config Provider is NOT applied by the upgrade.** Provider modules run on the node in its current version, before the new code is installed, so the old implementation is what resolves the configuration. A fix to a provider only takes effect once a full deployment has made it the running version.
 
 The last point is the reason for the config-provider entry in the list above, and it applies to the provider's own code, not to the values it produces.
+
+Two more things belong to the boot of a node, and a hot upgrade goes past both.
+
+* **What the VM was started with.** `vm.args`, the environment of the release script and the flags of the emulator are read when the OS process starts. A release that changes them is installed, the file on disk is the new one, and the node runs with the old values until it restarts, with nothing to say so. The same goes for what the application reads once in `start/2` and keeps: a file loaded into `persistent_term`, a lookup table, a cache filled at boot. Load it from a function that `config_change/3` can call again, or send the release as a full deployment.
+* **The check of compile-time configuration.** A value read with `Application.compile_env/3` is compared with the runtime configuration when a release boots, and a release where they differ refuses to start. A hot upgrade does not boot anything: such a release installs, the code runs with one value and the application environment has another, and the node is fine until its next restart, which fails. That restart can be weeks later, in the middle of something else. Boot the new release once before installing it, a step that runs the migrations with `bin/my_app eval` does it, and the upgrade is refused while the previous version is still serving.
 
 ## How a hot upgrade works
 
@@ -587,6 +595,12 @@ If a release changes the shape of data your LiveView stores in assigns in a way 
 A function value handed to a component as a prop, stored in `socket.assigns`, or captured in a slot, is tied to the module version that created it exactly like a closure in any other process state.
 The same goes for a hook: `attach_hook(socket, :name, :handle_params, &my_hook/3)` stores the capture in the socket of every open page, and the first event that reaches it after an upgrade of that module fails with `BadFunctionError`. Write `&__MODULE__.my_hook/3`, with the function exported.
 `assign(socket, on_select: fn item -> ... end)` held across a hot upgrade is the LiveView-flavoured instance of the anonymous-function rule above, not a special case, the fix is the same: pass `{module, function, args}` or a reference the current code resolves through a module call.
+
+**An upgrade of LiveView is an upgrade of your web layer.**
+Your LiveViews, components and templates are compiled with macros of the library, so a new version of it changes the code they compile to, whether or not you touched them.
+A release that moved LiveView by one patch version loaded ten modules of the library and 136 of the application, every LiveView and component among them, and each open page that held a function value from one of those modules crashed on its next event.
+Count such a release as one that changes every page, and read the diff of the library for changes to what a connection keeps, as for [any other dependency](#good-practices-for-a-project-that-can-be-hot-upgraded).
+A version that changes only the JavaScript client loads nothing on the server, and falls under the static assets rules above.
 
 ## Adding or removing a process in the supervision tree
 

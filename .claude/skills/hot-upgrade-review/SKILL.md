@@ -26,6 +26,7 @@ Go through the diff and flag anything in these categories. Report concrete file/
 
 - Take the list of dependencies that moved from the `mix.lock` diff, not from `mix.exs`. A dependency that is not declared in `mix.exs` and moved because another one brought it in is hot-upgraded too, and needs the same review as a declared one, see "Assess every dependency you upgrade, one at a time" in the README.
 - For each one, read what changed between the two versions and flag changes to the state of a running process or to a supervision tree.
+- A new version of a library whose macros the application is compiled with, `phoenix_live_view`, `phoenix`, `ecto`, changes the application's own modules too. Take the list of what is loaded from the appups of a build, not from the diff: one patch version of LiveView reloaded every LiveView and component of an application.
 - Include the processes a library starts for each connection or request. A web server that changes the struct of its HTTP/2 connections, as Bandit 1.15 did, closes every HTTP/2 connection that is open at the upgrade, on its next request.
 - If the project uses a Jellyfish version before 0.2.10, flag every moved dependency that `mix.exs` does not declare: it gets no appup, and the relup fails to build.
 
@@ -58,6 +59,8 @@ The same goes for a task. Flag a long-lived `Task` started with an anonymous fun
 - A struct that is kept across a call, in process state, ETS or a cache, gained or lost a field. Existing values do not have it. Confirm a `code_change/3` that builds the new state with a struct literal, and not with a call into the module that defines the struct, which may still be the old one when the migration runs.
 - The diff changes a module that a long request runs through: a download, an upload, an export, a streamed response. A request in flight is killed, and nothing tries it again. See "A request in flight is a process inside your code".
 - The diff adds to something the application registers once at boot: a metric, a telemetry handler, a queue, a scheduled job, or changes configuration that a child of the supervision tree was started with, such as the queues of Oban. It is not picked up until the process that holds the list restarts. See "Register again what was registered at boot".
+- The diff changes `vm.args`, `rel/env.sh.eex`, or a file the application loads when it boots. None of it takes effect until a restart, and nothing reports it.
+- The diff changes a value read with `Application.compile_env`, or sets one in `runtime.exs`. A release where the two differ cannot boot, and a hot upgrade installs it all the same. Ask how the release is booted once before the upgrade.
 - A migration changes the type of a column in place. The connections are kept across a hot upgrade, and a query prepared on them fails once on each. Ask for the change in two releases.
 
 ## Phoenix / LiveView specific

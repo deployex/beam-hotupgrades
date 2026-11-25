@@ -70,6 +70,7 @@ List every module that runs as a process: `use GenServer`, `use Agent`, `:gen_st
 A hot upgrade restarts nothing, so anything computed when the application started keeps its value.
 
 - **Caches filled in `start/2` or `init/1`**: a `persistent_term`, an ETS table, a file read once.
+- **What is read once at boot.** `vm.args` and the environment of the release script, files loaded into memory or `persistent_term` in `start/2`, values read with `Application.compile_env`. A hot upgrade changes none of them on the node, and does not run the check that refuses to boot a release whose compile-time and runtime values differ. See "What happens to configuration during a hot upgrade". Ask for a step that boots the new release before it is installed, such as the migrations run with `eval`.
 - **Lists handed to a library at boot**: the metrics of a reporter (`Telemetry.Metrics`, PromEx plugins), telemetry handlers attached in `start/2`, the queues, plugins and schedule of a job library, the topology of a consumer. A release that adds to one is not picked up. See "Register again what was registered at boot". List each one with the process that holds it.
 - **Values read from the environment at boot**: a version, a feature flag, a URL. `System.get_env` in `runtime.exs` is evaluated again by a deployment tool that resolves the runtime configuration, a value copied into process state is not.
 - **The version on traces and logs**: where it comes from, and whether it is the release version. A tool that updates it during the upgrade can only recognise the release version.

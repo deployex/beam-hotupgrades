@@ -20,6 +20,108 @@ High availability is not free though, it is something you design for, and this g
 
 A release is easiest to judge backwards: look first for what cannot be hot-upgraded, then decide about everything else.
 
+## Before you decide
+
+Hot upgrades have a reputation: powerful, rarely used, easy to get wrong.
+This section is for whoever has to judge them for a project, a person or a coding agent, before reading the rest.
+It says what is being decided, who it suits, what one real release looked like, and what the usual objections come to.
+
+### It is a choice for each release
+
+Adopting hot upgrades does not mean that every release becomes one.
+A release is hot-upgraded when it can be, and deployed in full when it cannot: a new Erlang or Elixir, a library with native code, a change nobody wrote the instructions for.
+A deployment tool checks that for each release, see [Checking whether a hot upgrade is possible](#checking-whether-a-hot-upgrade-is-possible), and the full deployment stays in place as the way every release can always go out.
+
+So the question is not whether the project can live without restarts.
+It is whether the releases that could skip one are worth the rules that make it possible.
+
+### Who it is for
+
+It pays when a restart costs something that a load balancer does not hide:
+
+ * **Connections that live long**: LiveView, WebSockets, long polling, streams. A restart drops them, and every user reconnects at once.
+ * **State in memory** that is slow or impossible to rebuild: sessions, caches, a call in progress, a game, a document being edited.
+ * **Work that runs for a while**: jobs, imports, exports, consumers in the middle of a message.
+ * **Frequent releases**, where the cost above is paid many times a week.
+ * **Hosts that outlive a release.** The node that is upgraded is the one that was running.
+
+It does not pay, or does not fit, when:
+
+ * **The service is stateless** and a rolling restart behind a load balancer is already invisible.
+ * **The platform replaces instances to deploy**, as a container orchestrator does. A hot upgrade needs the same node before and after.
+ * **Most releases change the runtime or native code**, which are full deployments whatever else they hold.
+ * **Nobody will keep the rules.** They apply to every change from then on, see [Good practices for a project that can be hot-upgraded](#good-practices-for-a-project-that-can-be-hot-upgraded).
+
+### What one real release looked like
+
+A Phoenix application of about 600 modules, with LiveView pages, background jobs, two message consumers and tracing.
+It had never been hot-upgraded, and nothing in it was written with that in mind.
+The release tried was the one that was going out that week, as it was.
+
+| | |
+|---|---|
+| The release | 43 commits, 5 database migrations, 7 dependencies on a new version, among them the HTTP server, the web framework and an HTTP client |
+| The upgrade | 229 instructions over 8 applications |
+| Code loaded | 188 modules of 1,928, the ones that differed between the two builds, and no others |
+| The node | the same operating system process before and after |
+| Afterwards | every module in memory was the one of the new release, with no old code left, and the application answered |
+
+It did not go like that the first time.
+What was in the way was found by running the steps of [The path to hot upgrades](#the-path-to-hot-upgrades), not by reading the code:
+
+| What happened | What it took |
+|---|---|
+| Every upgrade loaded every module, whatever had changed | A fix in the tool that compares the two builds |
+| The HTTP client moved to a version with a new process and a new shape of state. The upgrade failed halfway, the node restarted, and the tool deployed the release in full | An appup for that library written by hand, kept in the repository: stop it, load it, start it again |
+| A job running in a module that was replaced was killed, and tried again a few seconds later | Nothing. The deployment tool now waits for running jobs as a shutdown does |
+| A message being handled when its consumer was replaced left the consumer connected and receiving nothing, with no line in the log | The deployment tool stops the consumers before the code is replaced, and starts them after |
+| A release that added a struct with a protocol implementation installed, and raised the first time the struct was used | The deployment tool loads the consolidated protocols of the new release |
+| A page that was open crashed on its first event after the upgrade, and reconnected | Still to do in the application: more than a hundred function values kept by open pages |
+
+Two things are not in that table.
+The database of the test had the schema and no data, and nobody was using the application during the upgrade: what it shows is that the mechanism works on a real release, not how it behaves under traffic.
+And the last row is the application's own work, which no tool does for it.
+
+### The questions that come first
+
+**Why not restart the nodes one at a time?**
+For a stateless service, do that.
+A rolling restart still closes every connection, drops what each node held in memory and interrupts the work it was doing, once for each node.
+A hot upgrade is for the releases where that is the cost. Both can be used by the same project.
+
+**What happens when an upgrade fails?**
+Until the new code starts to be loaded, nothing on the node has changed: the upgrade is given up and the release is deployed in full.
+After that point the node restarts, and the release is then deployed in full.
+The worst case is the restart a full deployment would have caused anyway. See [How a hot upgrade works](#how-a-hot-upgrade-works).
+
+**Do the upgrade instructions have to be written by hand?**
+No. They are generated from the difference between two builds, by [Jellyfish](https://github.com/deployex/jellyfish) for Elixir and [rebar3_jellyfish_plugin](https://github.com/deployex/rebar3_jellyfish_plugin) for Erlang.
+What the difference cannot show is written by hand, as a file in the repository that is reviewed as code is: a process added to or removed from a supervision tree, a library that has to be stopped and started.
+
+**What about the dependencies?**
+Each one that changes version gets its own instructions, the ones the project does not declare included.
+Most only have their modules loaded.
+One that changes what its processes hold needs the hand-written file above, and one with native code makes the release a full deployment. See [Assess every dependency you upgrade, one at a time](#good-practices-for-a-project-that-can-be-hot-upgraded).
+
+**What about the state of running processes?**
+A process whose state changes shape migrates it in `code_change/3`.
+A LiveView has no such callback for an open page, so its data stays compatible across one release or the page reconnects. See [Phoenix and LiveView pitfalls](#phoenix-and-liveview-pitfalls).
+
+**What about work in progress?**
+A process still inside a module that is replaced is killed.
+A deployment tool can keep work out of the way while the code is replaced, by stopping the message consumers and waiting for running jobs as a shutdown does, and a job that is killed anyway is tried again by its library.
+
+**What about database migrations?**
+They run before the upgrade, against the code that is still running, so they have to be compatible with it.
+That is the rule a rolling restart already has. See [Keep the two versions compatible at their boundaries](#good-practices-for-a-project-that-can-be-hot-upgraded).
+
+**How do I know what an upgrade did?**
+The relup is the list of what the node ran: which applications, which modules, which processes were suspended.
+Keep it and read it. An upgrade that loads more than you changed is telling you something.
+
+**Can a release be undone?**
+Not by upgrading backwards. Publish the previous version, see [Going back](#going-back).
+
 ## The path to hot upgrades
 
 The rest of this guide is a reference: what the mechanism does, and what breaks under it.
@@ -59,16 +161,7 @@ Review every change that will ship as a hot upgrade with the [`hot-upgrade-revie
 A rule that is not checked is broken by the next feature.
 
 Steps 3 and 4 are not optional reading.
-On one Phoenix application of about 600 modules, with background jobs and message consumers, they found what no one had seen in years of full deployments:
-
- * Every upgrade loaded all 600 modules, whatever had changed, because of how the two builds were compared. An upgrade that touched one module then loaded one.
- * More than a hundred function values were held by open pages. The first event on a page after an upgrade of its module crashed it, and the page reconnected.
- * A job that was running when its module was replaced was killed, and tried again a few seconds later on the new code.
- * A message that was being handled when its consumer's module was replaced left the consumer connected and receiving nothing, without a line in the log, until it was restarted.
- * A release that added a struct with a protocol implementation installed without an error, and raised `Protocol.UndefinedError` the first time the struct was used.
- * A release that moved an HTTP client library to a version with a new process and a new shape of state failed halfway and restarted the node. With the instructions of that library edited to stop it, load it and start it again, the same release went through.
-
-All but the last let the upgrade report success. All of them were in the way of it being invisible.
+[What one real release looked like](#what-one-real-release-looked-like) lists what they found on an application that years of full deployments had never shown, and none of it would have been found by reading the code.
 
 ### For a library
 

@@ -47,7 +47,7 @@ Shipping more stops costing more, and the small release you would have held back
 
 **You release once a week, or less.**
 Each release then carries more: a week of commits, the migrations, the dependencies that moved.
-It also leaves you the time to prepare it: read what changes, write the instructions the generator cannot, apply the upgrade on staging before it reaches production.
+It also leaves you the time to prepare it, with a coding agent doing the reading: what changes, which instructions the generator cannot write, and the upgrade applied on staging before it reaches production.
 The release of the week goes out in the middle of the day, without a maintenance window and without a quiet hour to wait for.
 
 **You have a fix that cannot wait for the next release.**
@@ -134,6 +134,16 @@ That is the rule a rolling restart already has. See [Keep the two versions compa
 **How do I know what an upgrade did?**
 The relup is the list of what the node ran: which applications, which modules, which processes were suspended.
 Keep it and read it. An upgrade that loads more than you changed is telling you something.
+
+**Is this not a lot of expert work for every release?**
+It used to be, and that is most of the reputation.
+The work is reading: what changed in the code, what changed in each dependency, whether a process holds something new.
+Then it is writing a short file of instructions for the few cases that need one.
+Both are what a coding agent does well, and this repository ships two [skills](#skills-for-coding-agents) for it: one audits a project before it starts, the other reviews each change that will go out as an upgrade.
+In the release above, an agent read the two versions of the HTTP client, said why the generated instructions would fail, and wrote the ones that worked, with its reasons at the top of the file.
+
+What makes that trustworthy is not the agent's word, it is that the result is checked without anyone having to believe it: the upgrade is applied to a real node in CI, the node is asked what it runs, and the relup is kept.
+The person's part shrinks from working it out to reading a short file with its reasons, which is the review any change gets.
 
 **Can a release be undone?**
 Not by upgrading backwards. Publish the previous version, see [Going back](#going-back).

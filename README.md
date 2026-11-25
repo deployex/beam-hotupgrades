@@ -94,9 +94,37 @@ What was in the way was found by running the steps of [The path to hot upgrades]
 | A release that added a struct with a protocol implementation installed, and raised the first time the struct was used | The deployment tool loads the consolidated protocols of the new release |
 | A page that was open crashed on its first event after the upgrade, and reconnected | Still to do in the application: more than a hundred function values kept by open pages |
 
-Two things are not in that table.
-The database of the test had the schema and no data, and nobody was using the application during the upgrade: what it shows is that the mechanism works on a real release, not how it behaves under traffic.
-And the last row is the application's own work, which no tool does for it.
+More tests on the same application, each a release that changed one thing while the node was using it:
+
+| What was changed | What happened |
+|---|---|
+| A module that had attached a telemetry handler with a local capture | The handler failed on the first event and was detached. The one attached with `&__MODULE__.handle/4` went on working |
+| A metric added to the list a metrics reporter is given at boot | Not exported after the upgrade, exported after a restart |
+| A struct held by two processes gained a field | The process without a migration crashed on its next call and lost its state. The one with a migration kept it, once the migration stopped calling the module that defines the struct |
+| A plug that was serving a slow request and a streamed one | Both were cut at the upgrade: no response for the first, a partial one for the second |
+| The type of a column, with the connection pool open | A query that had not changed failed once on each connection that had prepared it, then worked |
+| The web server, Bandit 1.14 to 1.15, with an HTTP/2 connection open | The connection was closed with an internal error on its next request, which was lost. The client opened a new one and went on |
+| A module that four tasks were running, one of them inside a database transaction | All four were killed a moment after the upgrade, and the transaction was rolled back. A task started by module and function, with a short loop, went on with the new code |
+| A queue added to the configuration of the job library | The configuration of the node had the queue, the job library that was running did not, until a restart |
+| An application removed from the release | It was stopped and unloaded, its modules removed, and the protocol it implemented loaded again without it |
+| The version of LiveView, with a page open | The ten modules of the library that differed were loaded, and 136 modules of the application with them: its LiveViews and components are compiled against the library. The open page crashed on its next event, on a function value it had kept, and reconnected |
+| A value read at compile time, given another value in `runtime.exs` | With a migration step that boots the release before the upgrade: the step failed, the upgrade was refused and the node kept running. Without one: the upgrade installed, and the node could not boot again |
+| A file the application loads into memory when it boots, and a VM flag | The new file was on disk and the new flag in `vm.args`. The node went on with the old data and the old flag until a restart |
+
+The last runs were with the application in use:
+
+| What was going on during the upgrade | What happened |
+|---|---|
+| 20 requests a second, half of them a page that queries the database, through three upgrades | 7,667 requests, none failed, none took more than 0.3 seconds |
+| Two nodes, upgraded one after the other, with traffic on both and a presence tracked on each | Eight seconds with one node on each version. No request failed, and each node went on seeing both presences |
+| A message handled for 20 seconds by the consumer being replaced | The upgrade waited for it, and it finished on the code it started with |
+| A message handled for 50 seconds, longer than the upgrade waits | The upgrade went on after 30 seconds. The message was killed when its code was removed, and the broker delivered it again |
+| The message broker stopped | The upgrade went through, and the consumers connected again when the broker came back |
+| A job queued for a worker that the release removed | Failed on each attempt and was discarded, as after any deployment that removes a worker |
+
+Two things are not in those tables.
+The database of the test had the schema and no data, and the traffic was a script sending two kinds of request: what it shows is that the mechanism works on a real release and under a steady load, not how it behaves with the data and the users of production.
+And the last row of the first table is the application's own work, which no tool does for it.
 
 ### The questions that come first
 
@@ -265,6 +293,11 @@ What that means in practice, regardless of which tool drives the upgrade:
 
 The last point is the reason for the config-provider entry in the list above, and it applies to the provider's own code, not to the values it produces.
 
+Two more things belong to the boot of a node, and a hot upgrade goes past both.
+
+* **What the VM was started with.** `vm.args`, the environment of the release script and the flags of the emulator are read when the OS process starts. A release that changes them is installed, the file on disk is the new one, and the node runs with the old values until it restarts, with nothing to say so. The same goes for what the application reads once in `start/2` and keeps: a file loaded into `persistent_term`, a lookup table, a cache filled at boot. Load it from a function that `config_change/3` can call again, or send the release as a full deployment.
+* **The check of compile-time configuration.** A value read with `Application.compile_env/3` is compared with the runtime configuration when a release boots, and a release where they differ refuses to start. A hot upgrade does not boot anything: such a release installs, the code runs with one value and the application environment has another, and the node is fine until its next restart, which fails. That restart can be weeks later, in the middle of something else. Boot the new release once before installing it, a step that runs the migrations with `bin/my_app eval` does it, and the upgrade is refused while the previous version is still serving.
+
 ## How a hot upgrade works
 
 You do not need to write any of these files by hand, but knowing what they are is what makes the failures readable.
@@ -334,6 +367,8 @@ An appup only describes how to load the new code though, it says nothing about w
 
 Do that per dependency, not per release, and keep the number moving in a single hot upgrade small enough that the review stays realistic.
 
+Look at the processes a library starts for each connection as well as the ones it starts once. Bandit 1.15 added a field to the struct an HTTP/2 connection keeps its streams in. The process of a connection is not one the upgrade migrates, so every HTTP/2 connection open at the upgrade failed on its next request with a `KeyError`: the client got a `GOAWAY` with an internal error, lost that request, and opened a new connection. A client that tries again does not notice, and an HTTP/1 connection, which holds no such struct, was not affected.
+
 **Read the lockfile, not only `mix.exs`, to see which dependencies move.**
 A dependency update can move libraries you never declared: updating `finch` can move `nimble_pool` and `mint` with it.
 Those are hot-upgraded like any other, and since version 0.2.10 Jellyfish generates their appups too, for every dependency that a declared production dependency brings in and the release ships.
@@ -402,15 +437,20 @@ Captures have the same lifetime rule.
 `&Module.fun/1` of a public function is as safe as an MFA, since it is resolved through the module.
 `&private_fun/1` and `&(&1 + n)` are closures over the current module version and are not.
 
+A telemetry handler is where this is met most often, since it is attached once, when the application boots, and called for as long as the node lives.
+`:telemetry.attach("my-handler", event, &handle_event/4, nil)` keeps a capture of the module version that attached it.
+After an upgrade of that module the first event raises inside the handler, and Telemetry detaches a handler that fails: from then on the event is simply not handled, with one line in the log to say so.
+Attach `&__MODULE__.handle_event/4`, which Telemetry itself asks for with a warning at attach time.
+
 **Let long-running processes re-enter their loop through the module.**
 The VM keeps two versions of a module, the current one and the old one, and a process that is executing old code stays there until it makes a fully qualified call.
-Load a third version and the old code is purged, taking any process still lingering in it with it.
+The old code does not stay for long: it is purged when the release is made permanent, which a deployment tool does right after installing it, and any process still in it is killed.
 
 OTP behaviours do this for you, since `GenServer`, `Supervisor` and friends invoke your callbacks through the module on every message, so a `GenServer` is on the new code as soon as the upgrade completes.
 A hand-written process is not:
 
 ```elixir
-# stays in old code forever, and dies at the next purge
+# stays in old code, and is killed when it is purged
 defp loop(state) do
   receive do
     msg -> loop(handle(state, msg))
@@ -429,17 +469,50 @@ The same applies to anything that runs for a long time inside one call, a `Task`
 It keeps running the code it started with, and there is no supported way to change that from the outside.
 Write those as behaviours, or make the loop re-enter through the module so an upgrade has a point at which to take effect.
 
+Two things decide whether such a process lives through an upgrade of its module, and both were seen on a running node.
+How it was started: `Task.start(fn -> MyApp.Worker.loop() end)` keeps the anonymous function for as long as the task runs, and that function belongs to the version of the module that created it, so the task is killed even when the loop itself re-enters through the module. `Task.start(MyApp.Worker, :loop, [])` keeps nothing of the kind.
+And how long it blocks: the loop is only on the new code once it has come back from whatever it was waiting for and called itself again. Tasks that slept one second at a time were killed, the old code was purged before they woke up, and the same task sleeping 20 milliseconds went on with the new code.
+
+What the process was doing goes with it. A task that was holding a database transaction open was killed like the others, and the transaction was rolled back: every row it had written was gone.
+
 **Know that purging kills by default.**
 The `update` and `load_module` instructions each take a `PrePurge` and a `PostPurge` value, and a generated appup that leaves them out, which is the normal case, gets `brutal_purge` for both.
-Under `brutal_purge`, a process still executing the old code when the purge runs is killed outright, which is exactly what happens to a process that never re-entered through its module as described above, or to a plain process that happened to be mid-call when a third version loaded.
+Under `brutal_purge`, a process still executing the old code when the purge runs is killed outright, which is exactly what happens to a process that never re-entered through its module as described above, or to a plain process that happened to be mid-call when the old code was purged.
 `soft_purge` is the alternative: instead of killing, `release_handler:install_release/1` returns `{error, {old_processes, Module}}` and the purge waits until nothing is running the old code anymore.
 A NIF library follows the same timing from the native side, its `unload` callback only runs once the module instance it belongs to is purged, so a NIF-backed module left under `brutal_purge` can have its process killed while a call into the library is still in progress.
 Hand-edit the generated appup to set `soft_purge` on a specific module when this matters, the same way as [adding or removing a supervision-tree child](#adding-or-removing-a-process-in-the-supervision-tree).
+
+**A request in flight is a process inside your code.**
+The process that serves an HTTP request is executing your plug, your controller, your template.
+When one of those modules is replaced, that process is still inside the old version, and it is killed like any other: the client gets a response cut short, or none at all, and nothing tries the request again.
+A request that takes milliseconds rarely meets an upgrade.
+A download, an upload, an export or a long poll lasts long enough to, and only when the upgrade changes a module it is running through.
+Keep the long work out of the request, in a job that is tried again, or give the modules it runs through `soft_purge`, so the upgrade waits for them instead of killing.
 
 **Give stateful processes a `code_change/3`.**
 An appup can suspend a process, load the new module and resume it, but only your code knows how to reshape the state it was holding.
 If a `GenServer` state changes shape between versions, write the migration.
 If it does not, there is nothing to do.
+
+Adding a field to a struct is a change of shape.
+The values that already exist, in the state of a process, in an ETS table, in a message waiting in a mailbox, were built by the previous version and do not have the field.
+They still match `%MyStruct{}`, since the name is the same, and fail on the first `state.new_field` or `%{state | new_field: value}` with a `KeyError`.
+A process without a migration crashes on its next message, its supervisor starts it again, and what it held is gone.
+
+Write the migration so that it needs nothing but its own module.
+The upgrade replaces the modules one after the other, and `code_change/3` of a process runs as soon as its own module is loaded, which can be before the other modules of the release are.
+A migration that calls into one of them gets the previous version:
+
+```elixir
+# The struct is defined in another module, which this release also changes.
+# struct/2 asks that module for its fields when it runs, and that module may still be
+# the old one: the state comes back without the new field, and nothing says so
+def code_change(_old_vsn, state, _extra), do: {:ok, struct(MyApp.State, Map.from_struct(state))}
+
+# %MyApp.State{} is expanded when this module is compiled, so it is the new shape
+# whatever is loaded when it runs
+def code_change(_old_vsn, state, _extra), do: {:ok, %MyApp.State{count: state.count}}
+```
 
 A `gen_statem` callback module takes a different shape, `code_change/4`, with state and data as separate arguments and `{ok, NewState, NewData}` as the return.
 Implement the callback your behaviour actually calls.
@@ -453,6 +526,15 @@ This is the one case where a generated appup is not enough on its own, see [Addi
 Application environment is written to `sys.config` and read back with `file:consult/1`, so every value has to be a term that can be written down and parsed again.
 An anonymous function cannot, and a configuration file that fails to parse is silently replaced with an empty one, which resets the environment of every application in the release.
 Use `&Module.fun/1` captures of exported functions, or plain data your code interprets.
+
+**Register again what was registered at boot.**
+Some things are handed to a library once, when the application starts, and the library keeps the list: the metrics a reporter exports, the handlers attached to telemetry events, the queues and the schedule of a job library, the routes of a consumer.
+A hot upgrade loads the module that builds the list and nothing asks it for the list again.
+A release that adds a metric is installed, the event is emitted, and the metric is not exported until the node restarts.
+
+Configuration given to a child of the supervision tree is the same case. `{Oban, Application.fetch_env!(:my_app, Oban)}` reads the configuration once, when the supervisor starts the child. A release that adds a queue changes the application environment of the node, and the job library that is running still has the queues it was started with: jobs put on the new queue wait until a restart.
+
+Find what your application registers in `start/2`, and for each one decide what a release that changes it does: restart the process that holds the list from `config_change/3`, or go out as a full deployment.
 
 **Load the consolidated protocols when a release adds an implementation.**
 An Elixir release consolidates its protocols: each one is compiled again with the list of its implementations, and kept in `releases/<version>/consolidated`, outside of every application.
@@ -475,6 +557,12 @@ With a tool that does not, a release that adds a protocol implementation is a fu
 For a while the old and the new version coexist: messages sent before the upgrade are handled after it, replicas are upgraded one at a time so they talk to each other across versions, and rows and ETS entries written by the old code are read by the new one.
 Anything crossing those boundaries has to be readable by both, which makes the usual expand-then-contract sequence the safe shape.
 The release that adds a field accepts both shapes, and the release that drops the old one comes after it.
+
+The connections to the database are one of those boundaries.
+A full deployment opens new ones, a hot upgrade keeps the pool, and each connection keeps the statements it has prepared.
+A migration that changes the type of a column changes what a prepared statement returns, and PostgreSQL refuses it: `cached plan must not change result type`.
+The query fails once on each connection that had prepared it, and works again after that, so a release that changes a column type in place gives a burst of errors as wide as the pool.
+Adding a column does not do it. For a type, add the new column, move the data, and drop the old one in a later release.
 
 **Do not hot-upgrade native code.**
 A dependency that loads a NIF or a port driver brings a shared object that the VM loads outside the normal code path, and replacing it in a live node has rules of its own.
@@ -518,6 +606,12 @@ If a release changes the shape of data your LiveView stores in assigns in a way 
 A function value handed to a component as a prop, stored in `socket.assigns`, or captured in a slot, is tied to the module version that created it exactly like a closure in any other process state.
 The same goes for a hook: `attach_hook(socket, :name, :handle_params, &my_hook/3)` stores the capture in the socket of every open page, and the first event that reaches it after an upgrade of that module fails with `BadFunctionError`. Write `&__MODULE__.my_hook/3`, with the function exported.
 `assign(socket, on_select: fn item -> ... end)` held across a hot upgrade is the LiveView-flavoured instance of the anonymous-function rule above, not a special case, the fix is the same: pass `{module, function, args}` or a reference the current code resolves through a module call.
+
+**An upgrade of LiveView is an upgrade of your web layer.**
+Your LiveViews, components and templates are compiled with macros of the library, so a new version of it changes the code they compile to, whether or not you touched them.
+A release that moved LiveView by one patch version loaded ten modules of the library and 136 of the application, every LiveView and component among them, and each open page that held a function value from one of those modules crashed on its next event.
+Count such a release as one that changes every page, and read the diff of the library for changes to what a connection keeps, as for [any other dependency](#good-practices-for-a-project-that-can-be-hot-upgraded).
+A version that changes only the JavaScript client loads nothing on the server, and falls under the static assets rules above.
 
 ## Adding or removing a process in the supervision tree
 

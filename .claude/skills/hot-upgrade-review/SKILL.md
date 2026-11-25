@@ -26,6 +26,7 @@ Go through the diff and flag anything in these categories. Report concrete file/
 
 - Take the list of dependencies that moved from the `mix.lock` diff, not from `mix.exs`. A dependency that is not declared in `mix.exs` and moved because another one brought it in is hot-upgraded too, and needs the same review as a declared one, see "Assess every dependency you upgrade, one at a time" in the README.
 - For each one, read what changed between the two versions and flag changes to the state of a running process or to a supervision tree.
+- Include the processes a library starts for each connection or request. A web server that changes the struct of its HTTP/2 connections, as Bandit 1.15 did, closes every HTTP/2 connection that is open at the upgrade, on its next request.
 - If the project uses a Jellyfish version before 0.2.10, flag every moved dependency that `mix.exs` does not declare: it gets no appup, and the relup fails to build.
 
 ## Anonymous function / closure lifetime
@@ -44,7 +45,9 @@ A closure does not have to be in the diff to break. When the diff changes a modu
 
 ## Long-running processes that bypass OTP behaviours
 
-A hand-written `receive` loop (not a `GenServer`/`GenStatem`/etc.) that calls `loop(state)` instead of `__MODULE__.loop(state)` never picks up new code and gets purged (killing the process) at the next load of a third version. Flag any hand-rolled loop and confirm it re-enters through the module.
+A hand-written `receive` loop (not a `GenServer`/`GenStatem`/etc.) that calls `loop(state)` instead of `__MODULE__.loop(state)` never picks up new code and is killed when the old code is purged, right after the release is made permanent. Flag any hand-rolled loop and confirm it re-enters through the module.
+
+The same goes for a task. Flag a long-lived `Task` started with an anonymous function, `Task.start(fn -> ... end)`, `Task.async`, `start_async` in a LiveView, in a module the diff changes: the function belongs to the previous version and the task is killed. One that holds a database transaction open has it rolled back. Started with a module, a function and arguments, and looping through the module, it lives through the upgrade when it does not block for long.
 
 ## Protocol implementations
 
@@ -54,7 +57,7 @@ A hand-written `receive` loop (not a `GenServer`/`GenStatem`/etc.) that calls `l
 
 - A struct that is kept across a call, in process state, ETS or a cache, gained or lost a field. Existing values do not have it. Confirm a `code_change/3` that builds the new state with a struct literal, and not with a call into the module that defines the struct, which may still be the old one when the migration runs.
 - The diff changes a module that a long request runs through: a download, an upload, an export, a streamed response. A request in flight is killed, and nothing tries it again. See "A request in flight is a process inside your code".
-- The diff adds to something the application registers once at boot: a metric, a telemetry handler, a queue, a scheduled job. It is not picked up until the process that holds the list restarts. See "Register again what was registered at boot".
+- The diff adds to something the application registers once at boot: a metric, a telemetry handler, a queue, a scheduled job, or changes configuration that a child of the supervision tree was started with, such as the queues of Oban. It is not picked up until the process that holds the list restarts. See "Register again what was registered at boot".
 - A migration changes the type of a column in place. The connections are kept across a hot upgrade, and a query prepared on them fails once on each. Ask for the change in two releases.
 
 ## Phoenix / LiveView specific

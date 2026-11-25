@@ -111,8 +111,19 @@ More tests on the same application, each a release that changed one thing while 
 | A value read at compile time, given another value in `runtime.exs` | With a migration step that boots the release before the upgrade: the step failed, the upgrade was refused and the node kept running. Without one: the upgrade installed, and the node could not boot again |
 | A file the application loads into memory when it boots, and a VM flag | The new file was on disk and the new flag in `vm.args`. The node went on with the old data and the old flag until a restart |
 
+The last runs were with the application in use:
+
+| What was going on during the upgrade | What happened |
+|---|---|
+| 20 requests a second, half of them a page that queries the database, through three upgrades | 7,667 requests, none failed, none took more than 0.3 seconds |
+| Two nodes, upgraded one after the other, with traffic on both and a presence tracked on each | Eight seconds with one node on each version. No request failed, and each node went on seeing both presences |
+| A message handled for 20 seconds by the consumer being replaced | The upgrade waited for it, and it finished on the code it started with |
+| A message handled for 50 seconds, longer than the upgrade waits | The upgrade went on after 30 seconds. The message was killed when its code was removed, and the broker delivered it again |
+| The message broker stopped | The upgrade went through, and the consumers connected again when the broker came back |
+| A job queued for a worker that the release removed | Failed on each attempt and was discarded, as after any deployment that removes a worker |
+
 Two things are not in those tables.
-The database of the test had the schema and no data, and nobody was using the application during the upgrade: what it shows is that the mechanism works on a real release, not how it behaves under traffic.
+The database of the test had the schema and no data, and the traffic was a script sending two kinds of request: what it shows is that the mechanism works on a real release and under a steady load, not how it behaves with the data and the users of production.
 And the last row of the first table is the application's own work, which no tool does for it.
 
 ### The questions that come first

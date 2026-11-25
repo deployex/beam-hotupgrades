@@ -50,7 +50,12 @@ Each release then carries more: a week of commits, the migrations, the dependenc
 It also leaves you the time to prepare it: read what changes, write the instructions the generator cannot, apply the upgrade on staging before it reaches production.
 The release of the week goes out in the middle of the day, without a maintenance window and without a quiet hour to wait for.
 
-In both cases what is kept is the same:
+**You have a fix that cannot wait for the next release.**
+Every team ships hotfixes, whatever its cadence, and a hotfix is the smallest release there is: a module or two.
+Deployed in full, it restarts every node to change a few lines, usually at the worst moment, with a problem already in production.
+As a hot upgrade it is loaded into the running nodes in seconds, when it is needed, and the users it was meant to help are not disconnected by the cure.
+
+In all three cases what is kept is the same:
 
  * **Connections that live long**: LiveView, WebSockets, long polling, streams. A restart drops them, and every user reconnects at once.
  * **State in memory** that is slow or impossible to rebuild: sessions, caches, a call in progress, a game, a document being edited.

@@ -37,20 +37,31 @@ It is whether the releases that could skip one are worth the rules that make it 
 
 ### Who it is for
 
-It pays when a restart costs something that a load balancer does not hide:
+What a restart costs is the same for every team that has it: the connections that were open, what the node held in memory, the work it was doing.
+How often you release decides what you get back, not whether you get something.
+
+**You release many times a week, because the code moves fast.**
+Each release is a restart today, so the more you ship the more often your users are disconnected, and availability goes down as the team gets faster.
+With hot upgrades most of those releases are not restarts.
+Shipping more stops costing more, and the small release you would have held back for a quiet hour goes out when it is ready.
+
+**You release once a week, or less.**
+Each release then carries more: a week of commits, the migrations, the dependencies that moved.
+It also leaves you the time to prepare it: read what changes, write the instructions the generator cannot, apply the upgrade on staging before it reaches production.
+The release of the week goes out in the middle of the day, without a maintenance window and without a quiet hour to wait for.
+
+In both cases what is kept is the same:
 
  * **Connections that live long**: LiveView, WebSockets, long polling, streams. A restart drops them, and every user reconnects at once.
  * **State in memory** that is slow or impossible to rebuild: sessions, caches, a call in progress, a game, a document being edited.
  * **Work that runs for a while**: jobs, imports, exports, consumers in the middle of a message.
- * **Frequent releases**, where the cost above is paid many times a week.
- * **Hosts that outlive a release.** The node that is upgraded is the one that was running.
 
-It does not pay, or does not fit, when:
+What it asks for is in two parts:
 
- * **The service is stateless** and a rolling restart behind a load balancer is already invisible.
- * **The platform replaces instances to deploy**, as a container orchestrator does. A hot upgrade needs the same node before and after.
- * **Most releases change the runtime or native code**, which are full deployments whatever else they hold.
- * **Nobody will keep the rules.** They apply to every change from then on, see [Good practices for a project that can be hot-upgraded](#good-practices-for-a-project-that-can-be-hot-upgraded).
+ * **A node that is still there after the release.** A hot upgrade changes the code of the node that was running, so the application runs as a release on a host or a virtual machine. Where a deployment replaces the instance, as with containers, every release is a restart whatever the code allows: moving the stateful part of a system to hosts is how it gets this.
+ * **Rules that the team keeps**, on every change from then on, see [Good practices for a project that can be hot-upgraded](#good-practices-for-a-project-that-can-be-hot-upgraded). The readiness skill tells you how far a project is from them.
+
+A service that holds nothing, where a rolling restart behind a load balancer is already invisible, has nothing to gain: keep the rolling restart.
 
 ### What one real release looked like
 

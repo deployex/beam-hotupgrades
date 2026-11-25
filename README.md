@@ -94,7 +94,17 @@ What was in the way was found by running the steps of [The path to hot upgrades]
 | A release that added a struct with a protocol implementation installed, and raised the first time the struct was used | The deployment tool loads the consolidated protocols of the new release |
 | A page that was open crashed on its first event after the upgrade, and reconnected | Still to do in the application: more than a hundred function values kept by open pages |
 
-Two things are not in that table.
+Four more tests on the same application, each a release that changed one thing while the node was using it:
+
+| What was changed | What happened |
+|---|---|
+| A module that had attached a telemetry handler with a local capture | The handler failed on the first event and was detached. The one attached with `&__MODULE__.handle/4` went on working |
+| A metric added to the list a metrics reporter is given at boot | Not exported after the upgrade, exported after a restart |
+| A struct held by two processes gained a field | The process without a migration crashed on its next call and lost its state. The one with a migration kept it, once the migration stopped calling the module that defines the struct |
+| A plug that was serving a slow request and a streamed one | Both were cut at the upgrade: no response for the first, a partial one for the second |
+| The type of a column, with the connection pool open | A query that had not changed failed once on each connection that had prepared it, then worked |
+
+Two things are not in those tables.
 The database of the test had the schema and no data, and nobody was using the application during the upgrade: what it shows is that the mechanism works on a real release, not how it behaves under traffic.
 And the last row is the application's own work, which no tool does for it.
 
@@ -402,6 +412,11 @@ Captures have the same lifetime rule.
 `&Module.fun/1` of a public function is as safe as an MFA, since it is resolved through the module.
 `&private_fun/1` and `&(&1 + n)` are closures over the current module version and are not.
 
+A telemetry handler is where this is met most often, since it is attached once, when the application boots, and called for as long as the node lives.
+`:telemetry.attach("my-handler", event, &handle_event/4, nil)` keeps a capture of the module version that attached it.
+After an upgrade of that module the first event raises inside the handler, and Telemetry detaches a handler that fails: from then on the event is simply not handled, with one line in the log to say so.
+Attach `&__MODULE__.handle_event/4`, which Telemetry itself asks for with a warning at attach time.
+
 **Let long-running processes re-enter their loop through the module.**
 The VM keeps two versions of a module, the current one and the old one, and a process that is executing old code stays there until it makes a fully qualified call.
 Load a third version and the old code is purged, taking any process still lingering in it with it.
@@ -436,10 +451,37 @@ Under `brutal_purge`, a process still executing the old code when the purge runs
 A NIF library follows the same timing from the native side, its `unload` callback only runs once the module instance it belongs to is purged, so a NIF-backed module left under `brutal_purge` can have its process killed while a call into the library is still in progress.
 Hand-edit the generated appup to set `soft_purge` on a specific module when this matters, the same way as [adding or removing a supervision-tree child](#adding-or-removing-a-process-in-the-supervision-tree).
 
+**A request in flight is a process inside your code.**
+The process that serves an HTTP request is executing your plug, your controller, your template.
+When one of those modules is replaced, that process is still inside the old version, and it is killed like any other: the client gets a response cut short, or none at all, and nothing tries the request again.
+A request that takes milliseconds rarely meets an upgrade.
+A download, an upload, an export or a long poll lasts long enough to, and only when the upgrade changes a module it is running through.
+Keep the long work out of the request, in a job that is tried again, or give the modules it runs through `soft_purge`, so the upgrade waits for them instead of killing.
+
 **Give stateful processes a `code_change/3`.**
 An appup can suspend a process, load the new module and resume it, but only your code knows how to reshape the state it was holding.
 If a `GenServer` state changes shape between versions, write the migration.
 If it does not, there is nothing to do.
+
+Adding a field to a struct is a change of shape.
+The values that already exist, in the state of a process, in an ETS table, in a message waiting in a mailbox, were built by the previous version and do not have the field.
+They still match `%MyStruct{}`, since the name is the same, and fail on the first `state.new_field` or `%{state | new_field: value}` with a `KeyError`.
+A process without a migration crashes on its next message, its supervisor starts it again, and what it held is gone.
+
+Write the migration so that it needs nothing but its own module.
+The upgrade replaces the modules one after the other, and `code_change/3` of a process runs as soon as its own module is loaded, which can be before the other modules of the release are.
+A migration that calls into one of them gets the previous version:
+
+```elixir
+# The struct is defined in another module, which this release also changes.
+# struct/2 asks that module for its fields when it runs, and that module may still be
+# the old one: the state comes back without the new field, and nothing says so
+def code_change(_old_vsn, state, _extra), do: {:ok, struct(MyApp.State, Map.from_struct(state))}
+
+# %MyApp.State{} is expanded when this module is compiled, so it is the new shape
+# whatever is loaded when it runs
+def code_change(_old_vsn, state, _extra), do: {:ok, %MyApp.State{count: state.count}}
+```
 
 A `gen_statem` callback module takes a different shape, `code_change/4`, with state and data as separate arguments and `{ok, NewState, NewData}` as the return.
 Implement the callback your behaviour actually calls.
@@ -453,6 +495,13 @@ This is the one case where a generated appup is not enough on its own, see [Addi
 Application environment is written to `sys.config` and read back with `file:consult/1`, so every value has to be a term that can be written down and parsed again.
 An anonymous function cannot, and a configuration file that fails to parse is silently replaced with an empty one, which resets the environment of every application in the release.
 Use `&Module.fun/1` captures of exported functions, or plain data your code interprets.
+
+**Register again what was registered at boot.**
+Some things are handed to a library once, when the application starts, and the library keeps the list: the metrics a reporter exports, the handlers attached to telemetry events, the queues and the schedule of a job library, the routes of a consumer.
+A hot upgrade loads the module that builds the list and nothing asks it for the list again.
+A release that adds a metric is installed, the event is emitted, and the metric is not exported until the node restarts.
+
+Find what your application registers in `start/2`, and for each one decide what a release that changes it does: restart the process that holds the list from `config_change/3`, or go out as a full deployment.
 
 **Load the consolidated protocols when a release adds an implementation.**
 An Elixir release consolidates its protocols: each one is compiled again with the list of its implementations, and kept in `releases/<version>/consolidated`, outside of every application.
@@ -475,6 +524,12 @@ With a tool that does not, a release that adds a protocol implementation is a fu
 For a while the old and the new version coexist: messages sent before the upgrade are handled after it, replicas are upgraded one at a time so they talk to each other across versions, and rows and ETS entries written by the old code are read by the new one.
 Anything crossing those boundaries has to be readable by both, which makes the usual expand-then-contract sequence the safe shape.
 The release that adds a field accepts both shapes, and the release that drops the old one comes after it.
+
+The connections to the database are one of those boundaries.
+A full deployment opens new ones, a hot upgrade keeps the pool, and each connection keeps the statements it has prepared.
+A migration that changes the type of a column changes what a prepared statement returns, and PostgreSQL refuses it: `cached plan must not change result type`.
+The query fails once on each connection that had prepared it, and works again after that, so a release that changes a column type in place gives a burst of errors as wide as the pool.
+Adding a column does not do it. For a type, add the new column, move the data, and drop the old one in a later release.
 
 **Do not hot-upgrade native code.**
 A dependency that loads a NIF or a port driver brings a shared object that the VM loads outside the normal code path, and replacing it in a live node has rules of its own.

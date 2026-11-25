@@ -50,6 +50,13 @@ A hand-written `receive` loop (not a `GenServer`/`GenStatem`/etc.) that calls `l
 
 - The diff adds a `defimpl`, a `@derive`, or a dependency that brings one. The consolidated protocols are outside of every application, no appup covers them, and the node keeps the protocols it booted with: the first value of the new struct raises `Protocol.UndefinedError`. See "Load the consolidated protocols when a release adds an implementation" in the README. Confirm that the deployment tool loads the consolidated protocols of the new release as a step of the upgrade, or that this release goes out as a full deployment.
 
+## State, requests and what is registered at boot
+
+- A struct that is kept across a call, in process state, ETS or a cache, gained or lost a field. Existing values do not have it. Confirm a `code_change/3` that builds the new state with a struct literal, and not with a call into the module that defines the struct, which may still be the old one when the migration runs.
+- The diff changes a module that a long request runs through: a download, an upload, an export, a streamed response. A request in flight is killed, and nothing tries it again. See "A request in flight is a process inside your code".
+- The diff adds to something the application registers once at boot: a metric, a telemetry handler, a queue, a scheduled job. It is not picked up until the process that holds the list restarts. See "Register again what was registered at boot".
+- A migration changes the type of a column in place. The connections are kept across a hot upgrade, and a query prepared on them fails once on each. Ask for the change in two releases.
+
 ## Phoenix / LiveView specific
 
 - Any change under `assets/` or `priv/static/`: the static manifest is read when the endpoint starts and a hot upgrade does not read it again. Confirm that `config_change/3` calls `Endpoint.config_change/2`, which reloads it, and that the release asks the deployment tool to trigger that callback (`hot_upgrade_config_change` in DeployEx). Without both, this release is a full deployment.
